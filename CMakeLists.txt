@@ -1,11 +1,13 @@
 cmake_minimum_required(VERSION 3.22)
 
+# Must be set before project(): lowest target supported by current Xcode.
+# Covers Logic Pro X 10.4+ and every Ableton Live that runs on macOS 10.13 or later.
+set(CMAKE_OSX_DEPLOYMENT_TARGET "10.13" CACHE STRING "Minimum macOS version")
+
 project(VoxShiftX VERSION 1.1.0)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-# Lowest target supported by current Xcode: covers Logic Pro X 10.4+ and every Ableton Live that runs on it.
-set(CMAKE_OSX_DEPLOYMENT_TARGET "10.13" CACHE STRING "Minimum macOS version")
 
 include(FetchContent)
 FetchContent_Declare(
