@@ -7,49 +7,62 @@ on:
 permissions:
   contents: write
 
+env:
+  VERSION: "1.1.0"
+
 jobs:
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: macos-15-intel
-            name: macOS
-            cmake_extra: -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
-          - os: windows-latest
-            name: Windows
-            cmake_extra: ""
-    runs-on: ${{ matrix.os }}
+  macos:
+    # Intel runner builds a universal (Apple Silicon + Intel) binary and is usually free.
+    runs-on: macos-15-intel
     steps:
       - uses: actions/checkout@v4
 
       - name: Configure
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Release ${{ matrix.cmake_extra }}
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
 
       - name: Build
         run: cmake --build build --config Release --parallel
 
-      - name: Build macOS installer (.pkg)
-        if: runner.os == 'macOS'
+      - name: Collect and sign plugins
         run: |
           set -e
-          ART="build/VoxShiftX_artefacts/Release"
-          VERSION="1.0.0"
+          mkdir -p out
+          cp -R "build/VoxShiftX_artefacts/Release/VST3/VoxShift - X.vst3" out/
+          cp -R "build/VoxShiftXAU_artefacts/Release/AU/VoxShift - X.component" out/
+          cp -R "build/VoxShiftXMidiAU_artefacts/Release/AU/VoxShift - X MIDI.component" out/
+          for p in out/*; do codesign --force --deep -s - "$p"; done
+          lipo -info "out/VoxShift - X.component/Contents/MacOS/VoxShift - X"
+          /usr/bin/otool -l "out/VoxShift - X.component/Contents/MacOS/VoxShift - X" | grep -A3 -E "LC_BUILD_VERSION|LC_VERSION_MIN_MACOSX" | head -8
+
+      - name: Validate Audio Units with auval (same check Logic runs)
+        run: |
+          set -e
+          mkdir -p ~/Library/Audio/Plug-Ins/Components
+          cp -R out/*.component ~/Library/Audio/Plug-Ins/Components/
+          killall -9 AudioComponentRegistrar 2>/dev/null || true
+          sleep 5
+          auval -a | grep -i Tntk || true
+          auval -strict -v aufx Vsfx Tntk
+          auval -strict -v aumf Vsfm Tntk
+
+      - name: Validate with pluginval (AU + VST3)
+        run: |
+          set -e
+          curl -sSL -o pluginval.zip https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_macOS.zip
+          unzip -q pluginval.zip
+          PV=pluginval.app/Contents/MacOS/pluginval
+          $PV --strictness-level 8 --validate-in-process --sample-rates 44100,48000,96000 --block-sizes 64,512,2048 --validate "out/VoxShift - X.vst3"
+          $PV --strictness-level 8 --validate-in-process --sample-rates 44100,48000,96000 --block-sizes 64,512,2048 --validate ~/Library/Audio/Plug-Ins/Components/"VoxShift - X.component"
+
+      - name: Build installer (.pkg)
+        run: |
+          set -e
           ID="com.tunetalks.voxshiftx"
-
-          # Ad-hoc sign so the plugins load on Apple Silicon
-          codesign --force --deep -s - "$ART/VST3/VoxShift - X.vst3"
-          codesign --force --deep -s - "$ART/AU/VoxShift - X.component"
-
-          mkdir -p pkgroot/vst3 pkgroot/au pkgs installer
-          cp -R "$ART/VST3/VoxShift - X.vst3" pkgroot/vst3/
-          cp -R "$ART/AU/VoxShift - X.component" pkgroot/au/
-
-          pkgbuild --root pkgroot/vst3 --identifier "$ID.vst3" --version "$VERSION" \
-                   --install-location "/Library/Audio/Plug-Ins/VST3" pkgs/vst3.pkg
-          pkgbuild --root pkgroot/au --identifier "$ID.au" --version "$VERSION" \
-                   --install-location "/Library/Audio/Plug-Ins/Components" pkgs/au.pkg
-
+          mkdir -p root/vst3 root/au pkgs installer
+          cp -R "out/VoxShift - X.vst3" root/vst3/
+          cp -R "out/VoxShift - X.component" "out/VoxShift - X MIDI.component" root/au/
+          pkgbuild --root root/vst3 --identifier "$ID.vst3" --version "$VERSION" --install-location "/Library/Audio/Plug-Ins/VST3" pkgs/vst3.pkg
+          pkgbuild --root root/au   --identifier "$ID.au"   --version "$VERSION" --install-location "/Library/Audio/Plug-Ins/Components" pkgs/au.pkg
           cat > distribution.xml <<XML
           <?xml version="1.0" encoding="utf-8"?>
           <installer-gui-script minSpecVersion="2">
@@ -58,52 +71,63 @@ jobs:
               <options customize="allow" require-scripts="false" hostArchitectures="arm64,x86_64"/>
               <domains enable_localSystem="true"/>
               <choices-outline>
-                  <line choice="vst3"/>
                   <line choice="au"/>
+                  <line choice="vst3"/>
               </choices-outline>
-              <choice id="vst3" title="VST3 Plugin" description="Installa VoxShift - X in /Library/Audio/Plug-Ins/VST3">
-                  <pkg-ref id="$ID.vst3"/>
-              </choice>
-              <choice id="au" title="Audio Unit (AU)" description="Installa VoxShift - X in /Library/Audio/Plug-Ins/Components (Logic Pro, GarageBand, Ableton...)">
+              <choice id="au" title="Audio Unit (Logic Pro, GarageBand, Ableton Live)" description="VoxShift - X (effetto) e VoxShift - X MIDI (controllabile con le note) in /Library/Audio/Plug-Ins/Components">
                   <pkg-ref id="$ID.au"/>
               </choice>
-              <pkg-ref id="$ID.vst3" version="$VERSION">vst3.pkg</pkg-ref>
+              <choice id="vst3" title="VST3 (Ableton Live 10.1+, altri DAW)" description="VoxShift - X in /Library/Audio/Plug-Ins/VST3">
+                  <pkg-ref id="$ID.vst3"/>
+              </choice>
               <pkg-ref id="$ID.au" version="$VERSION">au.pkg</pkg-ref>
+              <pkg-ref id="$ID.vst3" version="$VERSION">vst3.pkg</pkg-ref>
           </installer-gui-script>
           XML
           sed -i '' 's/^          //' distribution.xml
-
-          productbuild --distribution distribution.xml --package-path pkgs \
-                       "installer/VoxShift - X Installer.pkg"
-          pkgutil --check-signature "installer/VoxShift - X Installer.pkg" || true
+          productbuild --distribution distribution.xml --package-path pkgs "installer/VoxShift - X Installer.pkg"
           ls -la installer
 
-      - name: Upload macOS installer
-        if: runner.os == 'macOS'
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: VoxShiftX-macOS-Installer
-          path: installer/*.pkg
+          name: VoxShiftX-macOS
+          path: |
+            installer/*.pkg
+            out
 
-      - name: Publish release with installer
-        if: runner.os == 'macOS' && github.ref == 'refs/heads/main'
+      - name: Publish release
+        if: github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="v1.0.0"
+          TAG="v$VERSION"
+          NOTES="VoxShift - X $VERSION by Tune Talks. Compatibile con Logic Pro (X 10.4 e successivi) e Ableton Live (AU su Mac, VST3 da Live 10.1 su Mac e Windows). Installer macOS universale (Apple Silicon + Intel): AU effetto, AU MIDI-controlled, VST3. Validato con auval e pluginval."
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "installer/VoxShift - X Installer.pkg" --clobber
           else
-            gh release create "$TAG" "installer/VoxShift - X Installer.pkg" \
-              --title "VoxShift - X v1.0.0" \
-              --notes "VoxShift - X by Tune Talks: pitch & formant shifter (Transpose, Quantize, Robot, MIDI, Drive). Installer macOS (Apple Silicon + Intel): VST3 + AU."
+            gh release create "$TAG" "installer/VoxShift - X Installer.pkg" --title "VoxShift - X v$VERSION" --notes "$NOTES"
           fi
 
-      - name: Upload plugins
-        uses: actions/upload-artifact@v4
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -B build
+
+      - name: Build
+        run: cmake --build build --config Release --parallel --target VoxShiftX_VST3
+
+      - name: Validate with pluginval (VST3)
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_Windows.zip -OutFile pluginval.zip
+          Expand-Archive pluginval.zip -DestinationPath pv
+          .\pv\pluginval.exe --strictness-level 8 --validate-in-process --sample-rates 44100,48000,96000 --block-sizes 64,512,2048 --validate "build\VoxShiftX_artefacts\Release\VST3\VoxShift - X.vst3"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - uses: actions/upload-artifact@v4
         with:
-          name: VoxShiftX-${{ matrix.name }}
-          path: |
-            build/VoxShiftX_artefacts/Release/VST3
-            build/VoxShiftX_artefacts/Release/AU
-            build/VoxShiftX_artefacts/Release/Standalone
+          name: VoxShiftX-Windows-VST3
+          path: build/VoxShiftX_artefacts/Release/VST3

@@ -46,6 +46,19 @@ public:
         stackSize = 0;
     }
 
+    /** Clears all audio history (transport stop, host reset) without reallocating. */
+    void reset()
+    {
+        ring.reset();
+        ringAbs = 0;
+        tracker.reset();
+        for (auto& g : grains) g.active = false;
+        countdown = 0.0f; havePrev = false;
+        robotNote = 48; quantNote = 57; newPhrase = true; silence = 0;
+        toneLp = 0.0f; dcPrev = dcState = 0.0f;
+        stackSize = 0;
+    }
+
     int getLatency() const { return latency; }
     void setParams (const ShiftParams& p) { params = p; }
 

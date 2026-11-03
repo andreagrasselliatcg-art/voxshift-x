@@ -48,35 +48,50 @@ juce::AudioProcessorValueTreeState::ParameterLayout VoxShiftAudioProcessor::crea
 
 bool VoxShiftAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
 {
+    const auto in  = layouts.getMainInputChannelSet();
     const auto out = layouts.getMainOutputChannelSet();
-    if (out != juce::AudioChannelSet::mono() && out != juce::AudioChannelSet::stereo()) return false;
-    return layouts.getMainInputChannelSet() == out;
+    const auto mono = juce::AudioChannelSet::mono(), stereo = juce::AudioChannelSet::stereo();
+
+    // mono -> mono, stereo -> stereo, and mono -> stereo (Logic mono tracks)
+    if (out == stereo) return in == stereo || in == mono;
+    if (out == mono)   return in == mono;
+    return false;
 }
 
-void VoxShiftAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
+void VoxShiftAudioProcessor::prepareToPlay (double sampleRate, int)
 {
     engine.prepare (sampleRate);
     setLatencySamples (engine.getLatency());
     dryDelay.setSize (2, engine.getLatency());
     dryDelay.clear();
     dryWrite = 0;
-    monoBuf.assign ((size_t) samplesPerBlock, 0.0f);
-    wetBuf.assign ((size_t) samplesPerBlock, 0.0f);
+    // Fixed-size work buffers: the host may send blocks of any size; we process in chunks.
+    monoBuf.assign ((size_t) kMaxChunk, 0.0f);
+    wetBuf.assign ((size_t) kMaxChunk, 0.0f);
     mixSmoothed.reset (sampleRate, 0.03);
     gainSmoothed.reset (sampleRate, 0.03);
     mixSmoothed.setCurrentAndTargetValue (pMix->load() * 0.01f);
     gainSmoothed.setCurrentAndTargetValue (juce::Decibels::decibelsToGain (pOutput->load()));
 }
 
+void VoxShiftAudioProcessor::reset()
+{
+    engine.reset();
+    dryDelay.clear();
+    dryWrite = 0;
+}
+
 void VoxShiftAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi)
 {
     juce::ScopedNoDenormals noDenormals;
-    const int numCh = getTotalNumInputChannels();
+    const int numIn  = getTotalNumInputChannels();
+    const int numOut = getTotalNumOutputChannels();
     const int n = buffer.getNumSamples();
-    for (auto ch = numCh; ch < getTotalNumOutputChannels(); ++ch) buffer.clear (ch, 0, n);
-    if (numCh == 0 || n == 0) return;
+    if (n == 0) return;
+    if (numIn == 0) { buffer.clear(); return; }
 
-    if ((int) monoBuf.size() < n) { monoBuf.resize ((size_t) n); wetBuf.resize ((size_t) n); }
+    // mono -> stereo: start the extra output channels from the input
+    for (int ch = numIn; ch < numOut; ++ch) buffer.copyFrom (ch, 0, buffer, 0, 0, n);
 
     vbx::ShiftParams p;
     p.mode    = (int) pMode->load();
@@ -86,57 +101,72 @@ void VoxShiftAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juc
     p.drive   = pDrive->load() * 0.01f;
     engine.setParams (p);
 
-    float peak = 0.0f;
-    for (int i = 0; i < n; ++i)
-    {
-        float s = 0.0f;
-        for (int ch = 0; ch < numCh; ++ch) s += buffer.getSample (ch, i);
-        monoBuf[(size_t) i] = s / (float) numCh;
-        peak = std::max (peak, std::abs (monoBuf[(size_t) i]));
-    }
-
-    // Process between MIDI events so notes land sample-accurately (within the block).
-    int pos = 0;
-    auto renderTo = [&] (int end)
-    {
-        if (end > pos) engine.process (monoBuf.data() + pos, wetBuf.data() + pos, end - pos);
-        pos = end;
-    };
-    for (const auto meta : midi)
-    {
-        const auto m = meta.getMessage();
-        renderTo (juce::jlimit (pos, n, meta.samplePosition));
-        if (m.isNoteOn())                                  engine.noteOn (m.getNoteNumber());
-        else if (m.isNoteOff())                            engine.noteOff (m.getNoteNumber());
-        else if (m.isAllNotesOff() || m.isAllSoundOff())   engine.allNotesOff();
-    }
-    renderTo (n);
-
     mixSmoothed.setTargetValue (pMix->load() * 0.01f);
     gainSmoothed.setTargetValue (juce::Decibels::decibelsToGain (pOutput->load()));
-    const int dryLen = dryDelay.getNumSamples();
 
-    for (int i = 0; i < n; ++i)
+    levelPeak = 0.0f;
+    auto midiIt = midi.begin();
+    for (int start = 0; start < n; start += kMaxChunk)
     {
-        const float m = mixSmoothed.getNextValue();
-        const float g = gainSmoothed.getNextValue();
-        const float dryG = std::cos (m * juce::MathConstants<float>::halfPi) * g;
-        const float wetG = std::sin (m * juce::MathConstants<float>::halfPi) * g;
-        for (int ch = 0; ch < numCh; ++ch)
+        const int len = std::min (kMaxChunk, n - start);
+
+        // mono sum of the real inputs
+        for (int i = 0; i < len; ++i)
         {
-            const int dch = std::min (ch, 1);
-            const float in = buffer.getSample (ch, i);
-            const float delayed = dryDelay.getSample (dch, dryWrite);
-            dryDelay.setSample (dch, dryWrite, in);
-            buffer.setSample (ch, i, delayed * dryG + wetBuf[(size_t) i] * wetG);
+            float s = 0.0f;
+            for (int ch = 0; ch < numIn; ++ch) s += buffer.getSample (ch, start + i);
+            monoBuf[(size_t) i] = s / (float) numIn;
+            levelPeak = std::max (levelPeak, std::abs (monoBuf[(size_t) i]));
         }
-        if (++dryWrite >= dryLen) dryWrite = 0;
+
+        // render, splitting at MIDI events
+        int pos = 0;
+        while (midiIt != midi.end() && (*midiIt).samplePosition < start + len)
+        {
+            const auto meta = *midiIt;
+            const int at = juce::jlimit (pos, len, meta.samplePosition - start);
+            if (at > pos) engine.process (monoBuf.data() + pos, wetBuf.data() + pos, at - pos);
+            pos = at;
+            const auto m = meta.getMessage();
+            if (m.isNoteOn())                                engine.noteOn (m.getNoteNumber());
+            else if (m.isNoteOff())                          engine.noteOff (m.getNoteNumber());
+            else if (m.isAllNotesOff() || m.isAllSoundOff()) engine.allNotesOff();
+            ++midiIt;
+        }
+        if (len > pos) engine.process (monoBuf.data() + pos, wetBuf.data() + pos, len - pos);
+
+        processRange (buffer, start, len);
     }
 
     midiNote.store (engine.heldNote());
     inputHz.store (engine.getDetectedHz());
     outputHz.store (engine.getOutputHz());
-    inputLevel.store (std::max (peak, inputLevel.load() * 0.85f));
+    inputLevel.store (std::max (levelPeak, inputLevel.load() * 0.85f));
+}
+
+void VoxShiftAudioProcessor::processRange (juce::AudioBuffer<float>& buffer, int start, int len)
+{
+    const int numOut = std::min (buffer.getNumChannels(), getTotalNumOutputChannels());
+    const int dryLen = dryDelay.getNumSamples();
+
+    for (int i = 0; i < len; ++i)
+    {
+        const float m = mixSmoothed.getNextValue();
+        const float g = gainSmoothed.getNextValue();
+        const float dryG = std::cos (m * juce::MathConstants<float>::halfPi) * g;
+        const float wetG = std::sin (m * juce::MathConstants<float>::halfPi) * g;
+        const float wet = wetBuf[(size_t) i] * wetG;
+
+        for (int ch = 0; ch < numOut; ++ch)
+        {
+            const int dch = std::min (ch, 1);
+            const float in = buffer.getSample (ch, start + i);
+            const float delayed = dryDelay.getSample (dch, dryWrite);
+            dryDelay.setSample (dch, dryWrite, in);
+            buffer.setSample (ch, start + i, delayed * dryG + wet);
+        }
+        if (++dryWrite >= dryLen) dryWrite = 0;
+    }
 }
 
 void VoxShiftAudioProcessor::getStateInformation (juce::MemoryBlock& destData)

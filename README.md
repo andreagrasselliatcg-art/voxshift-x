@@ -17,8 +17,24 @@ Pitch & formant shifter monofonico per voci (VST3 / AU / Standalone), con tre mo
 
 Doppio clic su un knob = valore di default; Shift + trascina = regolazione fine.
 
+## Compatibilità
+
+| DAW | Formato | Come si usa |
+|---|---|---|
+| **Logic Pro** (X 10.4 → 11 e successivi) | AU **VoxShift - X** | Slot Audio FX di qualsiasi traccia (mono, mono→stereo o stereo). |
+| Logic Pro con MIDI | AU **VoxShift - X MIDI** | Traccia strumento → slot Instrument → *AU MIDI-controlled Effects* → VoxShift - X MIDI; scegli la traccia della voce nel menu **Side Chain** del plugin e suona le note su quella traccia. |
+| **Ableton Live** per Mac (9, 10, 11, 12) | AU **VoxShift - X** o VST3 (da Live 10.1) | Trascina il plugin sulla traccia audio. |
+| **Ableton Live** per Windows (10.1, 11, 12) | VST3 | Trascina il plugin sulla traccia audio. |
+| Ableton Live con MIDI | VST3 | Su una traccia MIDI imposta **MIDI To** → traccia della voce → *VoxShift - X*. |
+| GarageBand, Reaper, Cubase, Studio One, FL Studio… | AU / VST3 | Come un normale effetto. |
+
+- macOS 10.13 o successivo, binario universale Apple Silicon + Intel (funziona anche con Logic/Live in Rosetta).
+- 44,1 – 192 kHz, qualunque buffer size, tracce mono e stereo; latenza dichiarata al DAW e compensata automaticamente.
+- Ogni build viene validata con **auval** (lo stesso test che Logic esegue all'avvio) e **pluginval**.
+- Non supportati: Logic Pro 9 e precedenti (a 32 bit, macOS troppo vecchi) e Ableton Live 9 / 10.0 **per Windows**, che accettano solo il vecchio formato VST2, non più distribuito da Steinberg.
+
 ## MIDI
-Il plugin accetta note MIDI (in Logic caricalo come *Audio Units MIDI-controlled Effects*; negli altri DAW manda una traccia MIDI al plugin):
+Il plugin accetta note MIDI (vedi la tabella sopra per Logic e Ableton):
 - **Transpose / Quantize**: la nota suonata imposta l'intervallo rispetto a C3 (nota 60). Es. G3 = +7. Con il MIX a metà crei armonizzazioni suonando gli intervalli.
 - **Robot**: la nota suonata è la nota del robot: puoi riscrivere la melodia della voce.
 

@@ -87,6 +87,15 @@ public:
 
     int getRange() const { return range; }
 
+    /** Clears the analysis history without reallocating (safe on the audio thread). */
+    void reset()
+    {
+        std::fill (ring.begin(), ring.end(), 0.0f);
+        aa.reset(); aa2.reset();
+        writePos = 0; decimCount = 0; hopCount = 0;
+        voiced = false;
+    }
+
     /** How far behind the newest input the pitch estimate is centred (in input samples). */
     int analysisDelaySamples() const { return (cfg.winLen * cfg.decim) / 2 + (cfg.hop * cfg.decim) / 2; }
 

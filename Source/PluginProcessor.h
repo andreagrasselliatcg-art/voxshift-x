@@ -22,6 +22,7 @@ public:
 
     void prepareToPlay (double sampleRate, int samplesPerBlock) override;
     void releaseResources() override {}
+    void reset() override;
     bool isBusesLayoutSupported (const BusesLayout& layouts) const override;
     void processBlock (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
     using AudioProcessor::processBlock;
@@ -30,7 +31,11 @@ public:
     bool hasEditor() const override { return true; }
 
     const juce::String getName() const override { return "VoxShift - X"; }
+   #if JucePlugin_WantsMidiInput
     bool acceptsMidi() const override  { return true; }
+   #else
+    bool acceptsMidi() const override  { return false; }
+   #endif
     bool producesMidi() const override { return false; }
     bool isMidiEffect() const override { return false; }
     double getTailLengthSeconds() const override { return 0.1; }
@@ -53,12 +58,16 @@ public:
     std::atomic<float> inputHz { 0.0f }, outputHz { 0.0f }, inputLevel { 0.0f };
 
 private:
+    void processRange (juce::AudioBuffer<float>&, int start, int len);
+
+    static constexpr int kMaxChunk = 2048;
     std::atomic<float> *pMode, *pPitch, *pFormant, *pLink, *pDrive, *pMix, *pOutput;
 
     vbx::ShiftEngine engine;
     juce::AudioBuffer<float> dryDelay;
     int dryWrite = 0;
     std::vector<float> monoBuf, wetBuf;
+    float levelPeak = 0.0f;
     juce::SmoothedValue<float> mixSmoothed, gainSmoothed;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (VoxShiftAudioProcessor)
