@@ -1,0 +1,109 @@
+name: Build VoxShift - X
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            name: macOS
+            cmake_extra: -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+          - os: windows-latest
+            name: Windows
+            cmake_extra: ""
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release ${{ matrix.cmake_extra }}
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Build macOS installer (.pkg)
+        if: runner.os == 'macOS'
+        run: |
+          set -e
+          ART="build/VoxShiftX_artefacts/Release"
+          VERSION="1.0.0"
+          ID="com.tunetalks.voxshiftx"
+
+          # Ad-hoc sign so the plugins load on Apple Silicon
+          codesign --force --deep -s - "$ART/VST3/VoxShift - X.vst3"
+          codesign --force --deep -s - "$ART/AU/VoxShift - X.component"
+
+          mkdir -p pkgroot/vst3 pkgroot/au pkgs installer
+          cp -R "$ART/VST3/VoxShift - X.vst3" pkgroot/vst3/
+          cp -R "$ART/AU/VoxShift - X.component" pkgroot/au/
+
+          pkgbuild --root pkgroot/vst3 --identifier "$ID.vst3" --version "$VERSION" \
+                   --install-location "/Library/Audio/Plug-Ins/VST3" pkgs/vst3.pkg
+          pkgbuild --root pkgroot/au --identifier "$ID.au" --version "$VERSION" \
+                   --install-location "/Library/Audio/Plug-Ins/Components" pkgs/au.pkg
+
+          cat > distribution.xml <<XML
+          <?xml version="1.0" encoding="utf-8"?>
+          <installer-gui-script minSpecVersion="2">
+              <title>VoxShift - X by Tune Talks</title>
+              <organization>com.tunetalks</organization>
+              <options customize="allow" require-scripts="false" hostArchitectures="arm64,x86_64"/>
+              <domains enable_localSystem="true"/>
+              <choices-outline>
+                  <line choice="vst3"/>
+                  <line choice="au"/>
+              </choices-outline>
+              <choice id="vst3" title="VST3 Plugin" description="Installa VoxShift - X in /Library/Audio/Plug-Ins/VST3">
+                  <pkg-ref id="$ID.vst3"/>
+              </choice>
+              <choice id="au" title="Audio Unit (AU)" description="Installa VoxShift - X in /Library/Audio/Plug-Ins/Components (Logic Pro, GarageBand, Ableton...)">
+                  <pkg-ref id="$ID.au"/>
+              </choice>
+              <pkg-ref id="$ID.vst3" version="$VERSION">vst3.pkg</pkg-ref>
+              <pkg-ref id="$ID.au" version="$VERSION">au.pkg</pkg-ref>
+          </installer-gui-script>
+          XML
+          sed -i '' 's/^          //' distribution.xml
+
+          productbuild --distribution distribution.xml --package-path pkgs \
+                       "installer/VoxShift - X Installer.pkg"
+          pkgutil --check-signature "installer/VoxShift - X Installer.pkg" || true
+          ls -la installer
+
+      - name: Upload macOS installer
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: VoxShiftX-macOS-Installer
+          path: installer/*.pkg
+
+      - name: Publish release with installer
+        if: runner.os == 'macOS' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="v1.0.0"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "installer/VoxShift - X Installer.pkg" --clobber
+          else
+            gh release create "$TAG" "installer/VoxShift - X Installer.pkg" \
+              --title "VoxShift - X v1.0.0" \
+              --notes "VoxShift - X by Tune Talks: pitch & formant shifter (Transpose, Quantize, Robot, MIDI, Drive). Installer macOS (Apple Silicon + Intel): VST3 + AU."
+          fi
+
+      - name: Upload plugins
+        uses: actions/upload-artifact@v4
+        with:
+          name: VoxShiftX-${{ matrix.name }}
+          path: |
+            build/VoxShiftX_artefacts/Release/VST3
+            build/VoxShiftX_artefacts/Release/AU
+            build/VoxShiftX_artefacts/Release/Standalone
