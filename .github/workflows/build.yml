@@ -129,20 +129,14 @@ jobs:
         run: |
           Invoke-WebRequest -Uri https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_Windows.zip -OutFile pluginval.zip
           Expand-Archive pluginval.zip -DestinationPath pv
-          $plugin = "build\VoxShiftX_artefacts\Release\VST3\VoxShift - X.vst3"
-          .\pv\pluginval.exe --strictness-level 8 --skip-gui-tests --sample-rates 44100,48000,96000 --block-sizes 64,512,2048 --validate $plugin
-          $core = $LASTEXITCODE
-          Write-Host "=== pluginval without GUI tests: exit $core ==="
-          .\pv\pluginval.exe --strictness-level 8 --verbose --validate-in-process --validate $plugin
-          $gui = $LASTEXITCODE
-          Write-Host "=== pluginval with GUI tests: exit $gui ==="
-          if ($gui -ne 0) {
-            Start-Sleep -Seconds 3
-            Get-WinEvent -FilterHashtable @{LogName='Application'; StartTime=(Get-Date).AddMinutes(-10)} -ErrorAction SilentlyContinue |
-              Where-Object { $_.ProviderName -in @('Application Error','Windows Error Reporting','.NET Runtime') } |
-              Select-Object -First 4 | ForEach-Object { $_.Message }
-          }
-          if ($core -ne 0 -or $gui -ne 0) { exit 1 }
+          $plugin = (Resolve-Path "build\VoxShiftX_artefacts\Release\VST3\VoxShift - X.vst3").Path
+          # pluginval.exe is a GUI-subsystem app: wait for it explicitly and read its exit code
+          $args = @('--strictness-level', '8', '--validate-in-process', '--sample-rates', '44100,48000,96000',
+                    '--block-sizes', '64,512,2048', '--output-dir', "$PWD\pvlogs", '--validate', "`"$plugin`"")
+          $p = Start-Process -FilePath ".\pv\pluginval.exe" -ArgumentList $args -Wait -NoNewWindow -PassThru
+          Get-ChildItem pvlogs -Filter *.txt -ErrorAction SilentlyContinue | ForEach-Object { Get-Content $_.FullName | Select-String -Pattern "Starting tests|FAILED|SUCCESS|!!!" }
+          Write-Host "pluginval exit code: $($p.ExitCode)"
+          if ($p.ExitCode -ne 0) { exit 1 }
 
       - uses: actions/upload-artifact@v4
         with:
