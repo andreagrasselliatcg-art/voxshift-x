@@ -34,7 +34,9 @@ jobs:
           lipo -info "out/VoxShift - X.component/Contents/MacOS/VoxShift - X"
           # fail if the binaries need a newer macOS than 10.13
           for b in "out/VoxShift - X.component/Contents/MacOS/VoxShift - X" "out/VoxShift - X MIDI.component/Contents/MacOS/VoxShift - X MIDI" "out/VoxShift - X.vst3/Contents/MacOS/VoxShift - X"; do
-            MINOS=$(/usr/bin/otool -l "$b" | awk '/LC_BUILD_VERSION/{f=1} f&&/minos/{print $2; exit}')
+            # Intel slice: LC_VERSION_MIN_MACOSX (version) for old targets, LC_BUILD_VERSION (minos) for new ones.
+            # (The Apple Silicon slice always starts at macOS 11, the first version for those Macs.)
+            MINOS=$(/usr/bin/otool -arch x86_64 -l "$b" | awk '/LC_VERSION_MIN_MACOSX|LC_BUILD_VERSION/{f=1} f&&/^ *(version|minos) /{print $2; exit}')
             echo "$b -> minimum macOS $MINOS"
             [ "$MINOS" = "10.13" ] || { echo "Wrong deployment target"; exit 1; }
           done
